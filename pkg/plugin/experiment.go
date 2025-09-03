@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"regexp"
 
 	"github.com/argoproj/argo-rollouts/pkg/apis/rollouts/v1alpha1"
 	"github.com/sirupsen/logrus"
@@ -129,6 +130,8 @@ func HandleExperiment(ctx context.Context, clientset *kubernetes.Clientset, gate
 		stableWeight := int32(100)
 		filteredBackendRefs := []gatewayv1.HTTPBackendRef{}
 
+		// Get all experiment backendRefs
+		experimentBackendRefNames := getAllExperimentBackendRefNames(rollout)
 		for _, backendRef := range httpRoute.Spec.Rules[ruleIdx].BackendRefs {
 			serviceName := string(backendRef.Name)
 
@@ -140,7 +143,11 @@ func HandleExperiment(ctx context.Context, clientset *kubernetes.Clientset, gate
 				backendRef.Weight = &zeroWeight
 				filteredBackendRefs = append(filteredBackendRefs, backendRef)
 			} else {
-				logger.Info(fmt.Sprintf("Removing experiment service from HTTPRoute: %s", serviceName))
+				for _, experimentBackendRefName := range experimentBackendRefNames {
+					if regexp.MustCompile(getBackendRefsExperimentNameRegex(rollout.Name, experimentBackendRefName)).MatchString(serviceName) {
+						logger.Info(fmt.Sprintf("Removing experiment service from HTTPRoute: %s", serviceName))
+					}
+				}
 			}
 		}
 
@@ -149,4 +156,32 @@ func HandleExperiment(ctx context.Context, clientset *kubernetes.Clientset, gate
 	}
 
 	return nil
+}
+
+// Experiment `backendRefs.name` will be generated with this format `<rollout-name>-<pod-hash>-<revision>-<current-step>-<experiment-name>`
+// 1. <rollout-name>-<pod-hash>-<revision>-<current-step> : when creating experiment resource
+// 2. <experiment-name> : added  when creating service name (from replicaset name)
+// Ref:
+// - [Experiment name on rollout v1.6.6](https://github.com/argoproj/argo-rollouts/blob/v1.6.6/rollout/experiment.go#L40)
+// - [Service name on rollout v1.6.6](https://github.com/argoproj/argo-rollouts/blob/v1.6.6/experiments/experiment.go#L304)
+// - [Replicaset name on rollout v1.6.6](https://github.com/argoproj/argo-rollouts/blob/v1.6.6/experiments/replicaset.go#L175)
+func getBackendRefsExperimentNameRegex(rolloutName string, experimentName string) string {
+	podHashRegex := "[a-z0-9]{10}"
+	revisionRegex := "[0-9]+"
+	stepRegex := "[0-9]+"
+	return fmt.Sprintf(`^%s-%s-%s-%s-%s$`, regexp.QuoteMeta(rolloutName), podHashRegex, revisionRegex, stepRegex, regexp.QuoteMeta(experimentName))
+}
+func getAllExperimentBackendRefNames(rollout *v1alpha1.Rollout) []string {
+	var experimentBackendRefs []string
+
+	for _, canaryStep := range rollout.Spec.Strategy.Canary.Steps {
+		var canaryExperiment = canaryStep.Experiment
+		if canaryExperiment != nil {
+			for _, templateRef := range canaryExperiment.Templates {
+				experimentBackendRefs = append(experimentBackendRefs, templateRef.Name)
+			}
+		}
+	}
+
+	return experimentBackendRefs
 }
