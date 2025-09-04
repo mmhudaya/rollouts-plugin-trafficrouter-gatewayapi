@@ -143,10 +143,16 @@ func HandleExperiment(ctx context.Context, clientset *kubernetes.Clientset, gate
 				backendRef.Weight = &zeroWeight
 				filteredBackendRefs = append(filteredBackendRefs, backendRef)
 			} else {
+				remove := false
 				for _, experimentBackendRefName := range experimentBackendRefNames {
 					if regexp.MustCompile(getBackendRefsExperimentNameRegex(rollout.Name, experimentBackendRefName)).MatchString(serviceName) {
+						remove = true
 						logger.Info(fmt.Sprintf("Removing experiment service from HTTPRoute: %s", serviceName))
+						break
 					}
+				}
+				if !remove {
+					filteredBackendRefs = append(filteredBackendRefs, backendRef)
 				}
 			}
 		}
